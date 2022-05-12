@@ -20,6 +20,7 @@ import android.Manifest;
 import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.DialogInterface;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.res.Resources;
 import android.media.Image;
@@ -30,6 +31,7 @@ import android.opengl.Matrix;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.provider.DocumentsContract;
 import android.provider.MediaStore;
 import android.util.Log;
 import android.view.MenuItem;
@@ -39,6 +41,7 @@ import android.widget.Button;
 import android.widget.ImageButton;
 import android.widget.PopupMenu;
 import android.widget.Toast;
+import androidx.annotation.Nullable;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
@@ -54,6 +57,7 @@ import com.google.ar.core.HitResult;
 import com.google.ar.core.InstantPlacementPoint;
 import com.google.ar.core.LightEstimate;
 import com.google.ar.core.Plane;
+import com.google.ar.core.PlaybackStatus;
 import com.google.ar.core.Point;
 import com.google.ar.core.Point.OrientationMode;
 import com.google.ar.core.PointCloud;
@@ -83,6 +87,7 @@ import com.google.ar.core.examples.java.common.samplerender.arcore.PlaneRenderer
 import com.google.ar.core.examples.java.common.samplerender.arcore.SpecularCubemapFilter;
 import com.google.ar.core.exceptions.CameraNotAvailableException;
 import com.google.ar.core.exceptions.NotYetAvailableException;
+import com.google.ar.core.exceptions.PlaybackFailedException;
 import com.google.ar.core.exceptions.RecordingFailedException;
 import com.google.ar.core.exceptions.UnavailableApkTooOldException;
 import com.google.ar.core.exceptions.UnavailableArcoreNotInstalledException;
@@ -111,12 +116,13 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
   private static final String SEARCHING_PLANE_MESSAGE = "Searching for surfaces...";
   private static final String WAITING_FOR_TAP_MESSAGE = "Tap on a surface to place an object.";
   private final String MP4_VIDEO_MIME_TYPE = "video/mp4";
-  private final int REQUEST_WRITE_EXTERNAL_STORAGE = 1;
+  private int REQUEST_MP4_SELECTOR = 1;
 
   // Represents the app's working state.
   public enum AppState {
     Idle,
-    Recording
+    Recording,
+    Playingback
   }
 
   // Tracks app's specific state changes.
@@ -494,6 +500,13 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     // the video background can be properly adjusted.
     displayRotationHelper.updateSessionIfNeeded(session);
 
+    // Check the playback status and return early if playback reaches the end.
+    if (appState == AppState.Playingback
+        && session.getPlaybackStatus() == PlaybackStatus.FINISHED) {
+      this.runOnUiThread(this::stopPlayingback);
+      return;
+    }
+
     // Obtain the current frame from ARSession. When the configuration is set to
     // UpdateMode.BLOCKING (it is by default), this will throttle the rendering to the
     // camera framerate.
@@ -642,6 +655,22 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     backgroundRenderer.drawVirtualScene(render, virtualSceneFramebuffer, Z_NEAR, Z_FAR);
   }
 
+  // Begin playback once the user has selected the file.
+  @Override
+  protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
+    // Check request status. Log an error if the selection fails.
+    if (resultCode != android.app.Activity.RESULT_OK || requestCode != REQUEST_MP4_SELECTOR) {
+      Log.e(TAG, "onActivityResult select file failed");
+      return;
+    }
+
+    Uri mp4FileUri = data.getData();
+    Log.d(TAG, String.format("onActivityResult result is %s", mp4FileUri));
+
+    // Begin playback.
+    startPlayingback(mp4FileUri);
+  }
+
   // Handle only one tap per frame, as taps are usually low frequency compared to frame rate.
   private void handleTap(Frame frame, Camera camera) {
     MotionEvent tap = tapHelper.poll();
@@ -723,21 +752,189 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     }
 
     updateRecordButton();
+    updatePlaybackButton();
+  }
+
+  // Handle the click event of the "Playback" button.
+  public void onClickPlayback(View view) {
+    Log.d(TAG, "onClickPlayback");
+
+    switch (appState) {
+
+      // If the app is not playing back, open the file picker.
+      case Idle: {
+        boolean hasStarted = selectFileToPlayback();
+        Log.d(TAG, String.format("onClickPlayback start: selectFileToPlayback %b", hasStarted));
+        break;
+      }
+
+      // If the app is playing back, stop playing back.
+      case Playingback: {
+        boolean hasStopped = stopPlayingback();
+        Log.d(TAG, String.format("onClickPlayback stop: hasStopped %b", hasStopped));
+        break;
+      }
+
+      default:
+        // Recording - do nothing.
+        break;
+    }
+
+    // Update the UI for the "Record" and "Playback" buttons.
+    updateRecordButton();
+    updatePlaybackButton();
   }
 
   // Update the "Record" button based on app's internal state.
   private void updateRecordButton() {
     View buttonView = findViewById(R.id.record_button);
-    Button button = (Button) buttonView;
+    Button button = (Button)buttonView;
 
     switch (appState) {
+
+      // The app is neither recording nor playing back. The "Record" button is visible.
       case Idle:
         button.setText("Record");
+        button.setVisibility(View.VISIBLE);
         break;
+
+      // While recording, the "Record" button is visible and says "Stop".
       case Recording:
         button.setText("Stop");
+        button.setVisibility(View.VISIBLE);
+        break;
+
+      // During playback, the "Record" button is not visible.
+      case Playingback:
+        button.setVisibility(View.INVISIBLE);
         break;
     }
+  }
+
+  // Update the "Playback" button based on app's internal state.
+  private void updatePlaybackButton() {
+    View buttonView = findViewById(R.id.playback_button);
+    Button button = (Button)buttonView;
+
+    switch (appState) {
+
+      // The app is neither recording nor playing back. The "Playback" button is visible.
+      case Idle:
+        button.setText("Playback");
+        button.setVisibility(View.VISIBLE);
+        break;
+
+      // While playing back, the "Playback" button is visible and says "Stop".
+      case Playingback:
+        button.setText("Stop");
+        button.setVisibility(View.VISIBLE);
+        break;
+
+      // During recording, the "Playback" button is not visible.
+      case Recording:
+        button.setVisibility(View.INVISIBLE);
+        break;
+    }
+  }
+
+  private boolean selectFileToPlayback() {
+    // Start file selection from Movies directory.
+    // Android 10 and above requires VOLUME_EXTERNAL_PRIMARY to write to MediaStore.
+    Uri videoCollection;
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+      videoCollection = MediaStore.Video.Media.getContentUri(
+          MediaStore.VOLUME_EXTERNAL_PRIMARY);
+    } else {
+      videoCollection = MediaStore.Video.Media.EXTERNAL_CONTENT_URI;
+    }
+
+    // Create an Intent to select a file.
+    Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+
+    // Add file filters such as the MIME type, the default directory and the file category.
+    intent.setType(MP4_VIDEO_MIME_TYPE); // Only select *.mp4 files
+    intent.putExtra(DocumentsContract.EXTRA_INITIAL_URI, videoCollection); // Set default directory
+    intent.addCategory(Intent.CATEGORY_OPENABLE); // Must be files that can be opened
+
+    this.startActivityForResult(intent, REQUEST_MP4_SELECTOR);
+
+    return true;
+  }
+
+  private boolean startPlayingback(Uri mp4FileUri) {
+    if (mp4FileUri == null)
+      return false;
+
+    Log.d(TAG, "startPlayingback at:" + mp4FileUri);
+
+    pauseARCoreSession();
+
+    try {
+      session.setPlaybackDatasetUri(mp4FileUri);
+    } catch (PlaybackFailedException e) {
+      Log.e(TAG, "startPlayingback - setPlaybackDataset failed", e);
+    }
+
+    // The session's camera texture name becomes invalid when the
+    // ARCore session is set to play back.
+    // Workaround: Reset the Texture to start Playback
+    // so it doesn't crashes with AR_ERROR_TEXTURE_NOT_SET.
+    hasSetTextureNames = false;
+
+    boolean canResume = resumeARCoreSession();
+    if (!canResume)
+      return false;
+
+    PlaybackStatus playbackStatus = session.getPlaybackStatus();
+    Log.d(TAG, String.format("startPlayingback - playbackStatus %s", playbackStatus));
+
+
+    if (playbackStatus != PlaybackStatus.OK) { // Correctness check
+      return false;
+    }
+
+    appState = AppState.Playingback;
+    updateRecordButton();
+    updatePlaybackButton();
+
+    return true;
+  }
+
+  // Stop the current playback, and restore app status to Idle.
+  private boolean stopPlayingback() {
+    // Correctness check, only stop playing back when the app is playing back.
+    if (appState != AppState.Playingback)
+      return false;
+
+    pauseARCoreSession();
+
+    // Close the current session and create a new session.
+    session.close();
+    try {
+      session = new Session(this);
+    } catch (UnavailableArcoreNotInstalledException
+        |UnavailableApkTooOldException
+        |UnavailableSdkTooOldException
+        |UnavailableDeviceNotCompatibleException e) {
+      Log.e(TAG, "Error in return to Idle state. Cannot create new ARCore session", e);
+      return false;
+    }
+    configureSession();
+
+    boolean canResume = resumeARCoreSession();
+    if (!canResume)
+      return false;
+
+    // A new session will not have a camera texture name.
+    // Manually set hasSetTextureNames to false to trigger a reset.
+    hasSetTextureNames = false;
+
+    // Reset appState to Idle, and update the "Record" and "Playback" buttons.
+    appState = AppState.Idle;
+    updateRecordButton();
+    updatePlaybackButton();
+
+    return true;
   }
 
   private boolean startRecording() {
