@@ -17,6 +17,7 @@
 package com.google.ar.core.examples.java.helloar;
 
 import android.Manifest;
+import android.annotation.SuppressLint;
 import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.DialogInterface;
@@ -61,9 +62,12 @@ import com.google.ar.core.PlaybackStatus;
 import com.google.ar.core.Point;
 import com.google.ar.core.Point.OrientationMode;
 import com.google.ar.core.PointCloud;
+import com.google.ar.core.Pose;
 import com.google.ar.core.RecordingConfig;
 import com.google.ar.core.RecordingStatus;
 import com.google.ar.core.Session;
+import com.google.ar.core.Track;
+import com.google.ar.core.TrackData;
 import com.google.ar.core.Trackable;
 import com.google.ar.core.TrackingFailureReason;
 import com.google.ar.core.TrackingState;
@@ -98,11 +102,13 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
+import java.nio.FloatBuffer;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
+import java.util.UUID;
 
 /**
  * This is a simple example that shows how to create an augmented reality (AR) application using the
@@ -117,6 +123,8 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
   private static final String WAITING_FOR_TAP_MESSAGE = "Tap on a surface to place an object.";
   private final String MP4_VIDEO_MIME_TYPE = "video/mp4";
   private int REQUEST_MP4_SELECTOR = 1;
+  private static final UUID ANCHOR_TRACK_ID = UUID.fromString("53069eb5-21ef-4946-b71c-6ac4979216a6");;
+  private static final String ANCHOR_TRACK_MIME_TYPE = "application/recording-playback-anchor";
 
   // Represents the app's working state.
   public enum AppState {
@@ -548,6 +556,10 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     // Handle one tap per frame.
     handleTap(frame, camera);
 
+    if (appState == AppState.Playingback) {
+      createRecordedAnchors(frame, camera);
+    }
+
     // Keep the screen unlocked while tracking, but allow it to lock when tracking stops.
     trackingStateHelper.updateKeepScreenOnFlag(camera.getTrackingState());
 
@@ -656,6 +668,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
   }
 
   // Begin playback once the user has selected the file.
+  @SuppressLint("MissingSuperCall")
   @Override
   protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
     // Check request status. Log an error if the selection fails.
@@ -706,6 +719,27 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
           // space. This anchor is created on the Plane to place the 3D model
           // in the correct position relative both to the world and to the plane.
           wrappedAnchors.add(new WrappedAnchor(hit.createAnchor(), trackable));
+
+          // If the app is recording a session,
+          // save the new Anchor pose (relative to the camera)
+          // into the ANCHOR_TRACK_ID track.
+          if (appState == AppState.Recording) {
+            // Get the pose relative to the camera pose.
+            Pose cameraRelativePose = camera.getPose().inverse().compose(hit.getHitPose());
+            float[] translation = cameraRelativePose.getTranslation();
+            float[] quaternion = cameraRelativePose.getRotationQuaternion();
+            ByteBuffer payload = ByteBuffer.allocate(4 * (translation.length + quaternion.length));
+            FloatBuffer floatBuffer = payload.asFloatBuffer();
+            floatBuffer.put(translation);
+            floatBuffer.put(quaternion);
+
+            try {
+              frame.recordTrackData(ANCHOR_TRACK_ID, payload);
+            } catch (IllegalStateException e) {
+              Log.e(TAG, "Error in recording anchor into external data track.", e);
+            }
+          }
+
           // For devices that support the Depth API, shows a dialog to suggest enabling
           // depth-based occlusion. This dialog needs to be spawned on the UI thread.
           this.runOnUiThread(this::showOcclusionDialogIfNeeded);
@@ -946,10 +980,16 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
 
     pauseARCoreSession();
 
+    // Create a new Track, with an ID and MIME tag.
+    Track anchorTrack = new Track(session)
+        .setId(ANCHOR_TRACK_ID)
+        .setMimeType(ANCHOR_TRACK_MIME_TYPE);
+
     // Configure the ARCore session to start recording.
     RecordingConfig recordingConfig = new RecordingConfig(session)
         .setMp4DatasetUri(mp4FileUri)
-        .setAutoStopOnPause(true);
+        .setAutoStopOnPause(true)
+        .addTrack(anchorTrack); // add the new track onto the recordingConfig
 
     try {
       // Prepare the session for recording, but do not start recording yet.
@@ -1064,6 +1104,34 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     }
 
     return false;
+  }
+
+  // Extract poses from the ANCHOR_TRACK_ID track, and create new anchors.
+  private void createRecordedAnchors(Frame frame, Camera camera) {
+    // Get all `ANCHOR_TRACK_ID` TrackData from the frame.
+    for (TrackData trackData : frame.getUpdatedTrackData(ANCHOR_TRACK_ID)) {
+      ByteBuffer payload = trackData.getData();
+      FloatBuffer floatBuffer = payload.asFloatBuffer();
+
+      // Extract translation and quaternion from TrackData payload.
+      float[] translation = new float[3];
+      float[] quaternion = new float[4];
+
+      floatBuffer.get(translation);
+      floatBuffer.get(quaternion);
+
+      // Transform the recorded anchor pose
+      // from the camera coordinate
+      // into world coordinates.
+      Pose worldPose = camera.getPose().compose(new Pose(translation, quaternion));
+
+      // Re-create an anchor at the recorded pose.
+      Anchor recordedAnchor = session.createAnchor(worldPose);
+
+      // Add the new anchor into the list of anchors so that
+      // the AR marker can be displayed on top.
+      wrappedAnchors.add(new WrappedAnchor(recordedAnchor, null));
+    }
   }
 
   /**
