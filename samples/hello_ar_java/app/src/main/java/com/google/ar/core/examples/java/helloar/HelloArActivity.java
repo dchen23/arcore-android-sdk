@@ -29,6 +29,7 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.widget.ImageButton;
 import android.widget.PopupMenu;
+import android.widget.TextView;
 import android.widget.Toast;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
@@ -116,6 +117,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
 
   // Rendering. The Renderers are created here, and initialized when the GL surface is created.
   private GLSurfaceView surfaceView;
+  private TextView monitorTextView;
 
   private boolean installRequested;
 
@@ -182,6 +184,9 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     setContentView(R.layout.activity_main);
     surfaceView = findViewById(R.id.surfaceview);
     displayRotationHelper = new DisplayRotationHelper(/*context=*/ this);
+
+    // Monitoring
+    monitorTextView = findViewById(R.id.text_monitor);
 
     // Set up touch listener.
     tapHelper = new TapHelper(/*context=*/ this);
@@ -612,6 +617,9 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
 
     // Compose the virtual scene with the background.
     backgroundRenderer.drawVirtualScene(render, virtualSceneFramebuffer, Z_NEAR, Z_FAR);
+
+    // Monitoring
+    updatePoseMonitor(camera.getDisplayOrientedPose().getTranslation(), camera.getDisplayOrientedPose().getRotationQuaternion());
   }
 
   // Handle only one tap per frame, as taps are usually low frequency compared to frame rate.
@@ -839,6 +847,23 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
       config.setInstantPlacementMode(InstantPlacementMode.DISABLED);
     }
     session.configure(config);
+  }
+
+  private void updatePoseMonitor(float[] trans, float[] quat) {
+    runOnUiThread(new Runnable() {
+      @Override
+      public void run() {
+        String posString = "\n\n  SLAM: \n" +
+            String.format("pos x: %f ", trans[0]) + "\n" +
+            String.format("pos y: %f ", trans[1]) + "\n" +
+            String.format("pos z: %f ", trans[2]) + "\n" +
+            String.format("qua x: %f ", quat[0]) + "\n" +
+            String.format("qua y: %f ", quat[1]) + "\n" +
+            String.format("qua z: %f ", quat[2]) + "\n" +
+            String.format("qua w: %f ", quat[3]) + "\n";
+        monitorTextView.setText(posString);
+      }
+    });
   }
 }
 
