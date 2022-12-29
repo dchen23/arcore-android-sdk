@@ -392,7 +392,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                   render, "shaders/point_cloud.vert", "shaders/point_cloud.frag", /*defines=*/ null)
               .setVec4(
                   "u_Color", new float[] {31.0f / 255.0f, 188.0f / 255.0f, 210.0f / 255.0f, 1.0f})
-              .setFloat("u_PointSize", 5.0f);
+              .setFloat("u_PointSize", 20.0f);
       // four entries per vertex: X, Y, Z, confidence
       pointCloudVertexBuffer =
           new VertexBuffer(render, /*numberOfEntriesPerVertex=*/ 4, /*entries=*/ null);
@@ -564,6 +564,15 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
       if (pointCloud.getTimestamp() > lastPointCloudTimestamp) {
         pointCloudVertexBuffer.set(pointCloud.getPoints());
         lastPointCloudTimestamp = pointCloud.getTimestamp();
+        Log.d(TAG, "onDrawFrame: point cloud num: " + pointCloud.getIds().limit());
+        Log.d(TAG, "onDrawFrame: point cloud buffer size: " + pointCloud.getPoints().limit());
+        if (pointCloud.getPoints().limit() > 0){
+          float[] arr = new float[pointCloud.getPoints().limit()];
+          pointCloud.getPoints().get(arr);
+          for (int i = 0; i < arr.length / 4; i++) {
+            Log.d(TAG, "onDrawFrame: point cloud pos: " + arr[4*i] + ", " + arr[4*i+1] + ", " + arr[4*i+2] + "; confident: " + arr[4*i+3]);
+          }
+        }
       }
       Matrix.multiplyMM(modelViewProjectionMatrix, 0, projectionMatrix, 0, viewMatrix, 0);
       pointCloudShader.setMat4("u_ModelViewProjection", modelViewProjectionMatrix);
